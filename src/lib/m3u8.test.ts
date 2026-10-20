@@ -49,6 +49,24 @@ describe('rewriteM3u8', () => {
   });
 });
 
+describe('native HLS URI attributes', () => {
+  it('rewrites audio/subtitles, session keys, I-frames and low-latency parts', () => {
+    const tags = ['#EXT-X-MEDIA:TYPE=SUBTITLES,URI="sub.m3u8"',
+      '#EXT-X-SESSION-KEY:METHOD=AES-128,URI="key.bin"',
+      '#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1000,URI="iframe.m3u8"',
+      '#EXT-X-PART:DURATION=1,URI="part.mp4"',
+      '#EXT-X-PRELOAD-HINT:TYPE=PART,URI="next.mp4"',
+      '#EXT-X-RENDITION-REPORT:URI="other.m3u8"'];
+    const urls: string[] = [];
+    const output = rewriteM3u8(tags.join('\n'), BASE, 0, undefined, (url) => {
+      urls.push(url); return '/signed?url=' + encodeURIComponent(url);
+    });
+    expect(urls).toHaveLength(6);
+    expect(urls.every((url) => url.startsWith('https://cdn.example.com/live/'))).toBe(true);
+    expect(output.match(/URI="\/signed/g)).toHaveLength(6);
+  });
+});
+
 describe('isProxiedUri', () => {
   it('新旧两种代理形式均识别', () => {
     expect(isProxiedUri('/api/proxy/' + encodeURIComponent('https://x.com/a.ts'))).toBe(true);

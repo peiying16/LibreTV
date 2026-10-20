@@ -1,7 +1,7 @@
 /**
  * m3u8 处理：代理路径重写与广告分片过滤
  *
- * 鉴权说明：重构后代理走同源 httpOnly cookie 鉴权，
+ * 鉴权说明：浏览器代理走同源 httpOnly cookie 鉴权，原生 HLS/AirPlay 通过 mapUrl 逐个签名，
  * hls.js 拉取重写后的分片时浏览器自动携带 cookie，无需再往 URL 上拼接 token，
  * 从根本上修复旧版「重写分片丢失鉴权参数导致 401」的问题。
  */
@@ -41,20 +41,24 @@ export function rewriteM3u8(
   content: string,
   baseUrl: string,
   depth = 0,
-  prefix: string = PROXY_BASE
+  prefix: string = PROXY_BASE,
+  mapUrl?: (url: string) => string
 ): string {
   if (depth > 5) return content;
+  const rewriteUri = (uri: string) => {
+    if (isProxiedUri(uri)) return uri;
+    const absolute = makeAbsolute(uri, baseUrl);
+    return mapUrl ? mapUrl(absolute) : prefix + encodeURIComponent(absolute);
+  };
   const lines = content.split('\n');
   const out = lines.map((line) => {
-    if (line.startsWith('#EXT-X-KEY') || line.startsWith('#EXT-X-MAP')) {
-      return line.replace(/(URI=")([^"]+)(")/g, (m, p1: string, uri: string, p2: string) => {
-        if (isProxiedUri(uri)) return m;
-        return p1 + prefix + encodeURIComponent(makeAbsolute(uri, baseUrl)) + p2;
-      });
+    // 原生 HLS 也会独立读取音轨、字幕、I-frame 与 LL-HLS 的 URI 属性。
+    if (line.startsWith('#EXT')) {
+      return line.replace(/([,:]URI=")([^"]+)(")/g,
+        (_m, p1: string, uri: string, p2: string) => p1 + rewriteUri(uri) + p2);
     }
     if (line.startsWith('#') || line.trim() === '') return line;
-    if (isProxiedUri(line)) return line;
-    return prefix + encodeURIComponent(makeAbsolute(line, baseUrl));
+    return rewriteUri(line.trim());
   });
   return out.join('\n');
 }

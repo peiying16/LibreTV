@@ -13,6 +13,7 @@ import {
 import { loadCacheSettings } from '@/lib/video-cache';
 import { formatTime } from '@/lib/utils';
 import { prefersTouchPointer } from '@/lib/touch-pointer';
+import { getNativePlaybackUrl, supportsNativeAirPlay } from '@/lib/native-hls';
 import {
   ART_DEFAULT_CONTROL_HIDE_MS,
   DESKTOP_CONTROL_HIDE_MS,
@@ -82,6 +83,8 @@ export function PlayerShell({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const artRef = useRef<any>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const nativePlaybackRef = useRef(false);
+  const mediaLoadRef = useRef<AbortController | null>(null);
   const [error, setError] = useState('');
   const [hint, setHint] = useState('');
   // 起播前的品牌占位图（沿用旧版 nomedia 素材），实际开始播放后隐藏
@@ -159,7 +162,7 @@ export function PlayerShell({
   // 当前集预取（episodeKey 缺省 = 关闭，见 ensure 内部 settings.enabled 判断）
   const ensurePrefetch = (mediaUrl: string, currentTime: number, horizonSeconds?: number) => {
     const p = propsRef.current;
-    if (!p.episodeKey) return;
+    if (!p.episodeKey || nativePlaybackRef.current) return;
     getVideoPrefetcher().ensure({
       m3u8Url: mediaUrl,
       currentTime,
@@ -187,14 +190,17 @@ export function PlayerShell({
   const setupHls = (video: HTMLVideoElement, mediaUrl: string, allowProxyFallback: boolean) => {
     restoreCleanupRef.current?.();
     restoreCleanupRef.current = null;
+    mediaLoadRef.current?.abort();
+    const load = new AbortController();
+    mediaLoadRef.current = load;
     hlsRef.current?.destroy();
+    hlsRef.current = null;
     currentMediaUrlRef.current = mediaUrl;
-    const hls = new Hls(buildHlsConfig());
-    hlsRef.current = hls;
+    nativePlaybackRef.current = supportsNativeAirPlay(video);
 
     let restoreInFlight = false;
     const restoreAndStart = async () => {
-      if (restoredRef.current || restoreInFlight) return;
+      if (load.signal.aborted || restoredRef.current || restoreInFlight) return;
 
       // MANIFEST_PARSED 早于 loadedmetadata 的 HLS 源很常见；没有有效时长时
       // 先不消费 restoredRef，等 loadedmetadata/durationchange 后再重试。
@@ -204,6 +210,7 @@ export function PlayerShell({
       restoreInFlight = true;
       try {
         const saved = (await propsRef.current.getRestorePosition?.()) ?? 0;
+        if (load.signal.aborted) return;
         const currentDuration = artRef.current?.duration || video.duration || duration;
         let prefetchAnchor = video.currentTime;
         if (saved > 10 && Number.isFinite(currentDuration) && saved < currentDuration - 2) {
@@ -230,6 +237,26 @@ export function PlayerShell({
       restoreEvents.forEach((event) => video.removeEventListener(event, onRestoreEvent));
     };
 
+    if (nativePlaybackRef.current) {
+      // Safari 原生播放直接交接签名 URL，电视取清单/分片不需要 iPad Cookie。
+      // 换集/卸载中止旧请求，防止慢响应把新集切回上一集。
+      video.disableRemotePlayback = false;
+      video.setAttribute('x-webkit-airplay', 'allow');
+      video.removeAttribute('src');
+      video.load();
+      void getNativePlaybackUrl(mediaUrl, propsRef.current.adFilter, load.signal).then((playUrl) => {
+        if (load.signal.aborted) return;
+        video.src = playUrl;
+        video.load();
+        video.play().catch(() => {});
+      }).catch((err: unknown) => {
+        if (!load.signal.aborted) setError(err instanceof Error ? err.message : '视频加载失败');
+      });
+      return;
+    }
+
+    const hls = new Hls(buildHlsConfig());
+    hlsRef.current = hls;
     hls.loadSource(mediaUrl);
     hls.attachMedia(video);
 
@@ -407,6 +434,9 @@ export function PlayerShell({
     };
     art.on('video:loadedmetadata', reportVideoHeight);
     art.on('video:canplay', reportVideoHeight);
+    art.on('video:canplay', () => {
+      if (nativePlaybackRef.current) mediaHealthyRef.current = true;
+    });
     // resize 不在 ArtPlayer 的视频事件转发表里，直接挂原生事件
     art.video?.addEventListener('resize', reportVideoHeight);
 
@@ -602,6 +632,7 @@ export function PlayerShell({
       restoreCleanupRef.current?.();
       restoreCleanupRef.current = null;
       Artplayer.CONTROL_HIDE_TIME = ART_DEFAULT_CONTROL_HIDE_MS;
+      mediaLoadRef.current?.abort();
       hlsRef.current?.destroy();
       hlsRef.current = null;
       recoveryRef.current?.dispose();
@@ -640,7 +671,7 @@ export function PlayerShell({
   const firstAdFilterRef = useRef(true);
   useEffect(() => {
     if (firstAdFilterRef.current) { firstAdFilterRef.current = false; return; }
-    if (artRef.current && hlsRef.current) {
+    if (artRef.current && (hlsRef.current || nativePlaybackRef.current)) {
       // 用当前实际媒体地址：代理回退生效时切广告过滤不应跳回直连形式
       loadEpisode(currentMediaUrlRef.current || propsRef.current.url);
     }

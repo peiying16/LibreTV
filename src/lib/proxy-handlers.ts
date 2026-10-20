@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { guardRequest, jsonError } from '@/lib/api-guard';
 import { checkLiveUrlAllowed, isBlockedByDNS, isValidProxyUrl } from '@/lib/ssrf';
 import { fetchWithSafeRedirects } from '@/lib/fetch-utils';
-import { rewriteM3u8, LIVE_STREAM_BASE } from '@/lib/m3u8';
+import { rewriteM3u8, LIVE_STREAM_BASE, stripAdGroups } from '@/lib/m3u8';
+import { signedPlaybackUrl, verifyPlaybackToken } from '@/lib/auth';
 
 /**
  * 代理目标地址的两种传入形式：
@@ -65,12 +66,13 @@ export function decodePathTarget(encodedUrl: string): string {
 /**
  * 通用流式代理（点播 / 图片）：
  * - 已登录会话（httpOnly cookie）→ m3u8 重写后的分片同源请求自动携带，不再有旧版丢鉴权参数的问题；
- * - 未登录仅放行图片目标（豆瓣封面等），且同样受 SSRF 防护约束；
+ * - 未登录仅放行图片目标或有对应 URL 限时签名的原生 HLS 请求，仍受 SSRF 防护约束；
  * - m3u8 文本重写为代理地址，分片/key/map 全部经本站转发，规避上游 CORS。
  */
 export async function handleProxyRequest(req: Request, targetUrl: string): Promise<Response> {
   const guarded = guardRequest(req);
-  if (guarded && !looksLikeImageUrl(targetUrl)) return guarded;
+  const playback = verifyPlaybackToken(new URL(req.url).searchParams.get('playback'), targetUrl);
+  if (guarded && !playback && !looksLikeImageUrl(targetUrl)) return guarded;
 
   if (!isValidProxyUrl(targetUrl)) {
     return new NextResponse('无效的 URL', { status: 400 });
@@ -96,8 +98,8 @@ export async function handleProxyRequest(req: Request, targetUrl: string): Promi
     try {
       const result = await fetchWithSafeRedirects(targetUrl, {
         headers,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
+        signal: playback ? req.signal : AbortSignal.timeout(TIMEOUT_MS),
+      }, playback ? { headerTimeoutMs: TIMEOUT_MS } : undefined);
       response = result.res;
       finalUrl = result.finalUrl;
       lastError = null;
@@ -116,12 +118,16 @@ export async function handleProxyRequest(req: Request, targetUrl: string): Promi
   const contentType = response.headers.get('content-type') || '';
   const isM3u8 =
     contentType.includes('mpegurl') || contentType.includes('x-mpegurl') ||
-    targetUrl.toLowerCase().endsWith('.m3u8');
+    new URL(targetUrl).pathname.toLowerCase().endsWith('.m3u8');
 
   // m3u8 文本：重写为代理地址（以重定向后的最终 URL 为 base 解析相对地址）
   if (isM3u8) {
     const text = await response.text();
-    return new NextResponse(rewriteM3u8(text, finalUrl), {
+    // 每个子清单、分片和密钥分别签名；沿用根清单期限，不能逐层续期或替换目标。
+    const content = playback?.adFilter ? stripAdGroups(text) : text;
+    const rewritten = rewriteM3u8(content, finalUrl, 0, undefined,
+      playback ? (url) => signedPlaybackUrl(url, playback) : undefined);
+    return new NextResponse(rewritten, {
       status: response.status,
       headers: {
         'Content-Type': 'application/vnd.apple.mpegurl',
@@ -141,7 +147,8 @@ export async function handleProxyRequest(req: Request, targetUrl: string): Promi
   // 图片基本不变：长缓存交给浏览器与边缘 CDN（分片 / key 仍保守 1 小时）
   outHeaders.set(
     'Cache-Control',
-    contentType.startsWith('image/') ? 'public, max-age=2592000' : 'public, max-age=3600'
+    playback ? 'private, no-store' :
+      contentType.startsWith('image/') ? 'public, max-age=2592000' : 'public, max-age=3600'
   );
   outHeaders.set('Access-Control-Allow-Origin', '*');
 

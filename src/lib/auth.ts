@@ -52,6 +52,35 @@ export function verifySession(token: string | undefined | null): boolean {
   return Date.now() < expiresAt;
 }
 
+/** AirPlay 接收端没有浏览器 Cookie，只授予单个媒体 URL 的限时读取权限。 */
+export interface PlaybackClaims {
+  expiresAt: number;
+  adFilter: boolean;
+}
+
+export const PLAYBACK_TTL_MS = 6 * 60 * 60 * 1000;
+
+export function signPlaybackToken(url: string, claims: PlaybackClaims): string {
+  const payload = `${claims.expiresAt}.${claims.adFilter ? 1 : 0}`;
+  return `${payload}.${hmac(`playback:${payload}:${url}`)}`;
+}
+
+export function verifyPlaybackToken(token: string | null, url: string): PlaybackClaims | null {
+  if (!isPasswordConfigured() || !token) return null;
+  const match = /^(\d+)\.([01])\.([a-f0-9]{64})$/.exec(token);
+  if (!match) return null;
+  const expiresAt = Number(match[1]);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return null;
+  const claims = { expiresAt, adFilter: match[2] === '1' };
+  const expected = signPlaybackToken(url, claims);
+  return token.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected)) ? claims : null;
+}
+
+export function signedPlaybackUrl(url: string, claims: PlaybackClaims): string {
+  return `/api/proxy?${new URLSearchParams({ url, playback: signPlaybackToken(url, claims) })}`;
+}
+
 /** 恒定时间比较密码（比较 sha256 摘要避免长度泄漏） */
 export function checkPassword(input: string): boolean {
   const password = getPassword();
