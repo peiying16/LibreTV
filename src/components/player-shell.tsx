@@ -13,7 +13,7 @@ import {
 import { loadCacheSettings } from '@/lib/video-cache';
 import { formatTime } from '@/lib/utils';
 import { prefersTouchPointer } from '@/lib/touch-pointer';
-import { bindNativeMediaSession, getNativePlaybackUrl, nativeControlsOwnPlayback, supportsNativeAirPlay } from '@/lib/native-hls';
+import { getNativePlaybackUrl, supportsNativeAirPlay } from '@/lib/native-hls';
 import {
   ART_DEFAULT_CONTROL_HIDE_MS,
   DESKTOP_CONTROL_HIDE_MS,
@@ -366,7 +366,6 @@ export function PlayerShell({
     endedRef.current = false;
 
     let lastSave = 0;
-    const nativeAirPlay = supportsNativeAirPlay(document.createElement('video'));
 
     const art = new Artplayer({
       container: containerRef.current,
@@ -375,9 +374,7 @@ export function PlayerShell({
       volume: 0.8,
       autoplay: true,
       pip: true,
-      // autoMini 会把 video 移到另一个 DOM 节点，原生全屏/AirPlay 期间保持元素位置稳定。
-      autoMini: !nativeAirPlay,
-      gesture: !nativeAirPlay,
+      autoMini: true,
       screenshot: true,
       setting: true,
       playbackRate: true,
@@ -423,7 +420,6 @@ export function PlayerShell({
       },
     });
     artRef.current = art;
-    const clearMediaSession = nativeAirPlay ? bindNativeMediaSession(art.video) : () => {};
 
     /**
      * 读解码后的真实分辨率。
@@ -571,7 +567,7 @@ export function PlayerShell({
     }
 
     const onTouchStart = (e: TouchEvent) => {
-      if (art.video?.paused || nativeControlsOwnPlayback(art.video)) return;
+      if (art.video?.paused) return;
       // 已有触控在处理时忽略新手指：否则第二指会把 originalRate 捕获成 3.0，
       // 松手后倍速永久卡在 3x；旧定时器句柄也会被覆盖成无法清除的幽灵触发
       if (isLongPress || longPressTimer) return;
@@ -579,8 +575,7 @@ export function PlayerShell({
       if ((e.target as HTMLElement).closest?.('.art-controls, .art-settings')) return;
       originalRate = art.video.playbackRate;
       longPressTimer = setTimeout(() => {
-        longPressTimer = null;
-        if (art.video?.paused || nativeControlsOwnPlayback(art.video)) return;
+        if (art.video?.paused) return;
         art.video.playbackRate = 3.0;
         isLongPress = true;
         showHint('3 倍速');
@@ -595,7 +590,7 @@ export function PlayerShell({
       }
     };
     const onTouchMove = (e: TouchEvent) => {
-      if (isLongPress && !nativeControlsOwnPlayback(art.video)) e.preventDefault();
+      if (isLongPress) e.preventDefault();
     };
     // ArtPlayer 的 contextmenu 组件只在桌面端初始化（移动端构造函数里跳过 init），
     // 长按倍速因而会连带呼出系统原生菜单/气泡。播放器表面没有可用的原生菜单，统一抑制
@@ -605,9 +600,6 @@ export function PlayerShell({
     el?.addEventListener('touchcancel', onTouchEnd);
     el?.addEventListener('touchmove', onTouchMove, { passive: false });
     el?.addEventListener('contextmenu', onContextMenu);
-    // 进入原生控件时取消还未结束的长按，不能依赖网页收到 native touchend。
-    art.video.addEventListener('webkitbeginfullscreen', onTouchEnd);
-    art.video.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', onTouchEnd);
 
     // 卸载与页面隐藏时保存进度
     const saveOnHide = () => {
@@ -628,16 +620,12 @@ export function PlayerShell({
       document.removeEventListener('keydown', shortcuts);
       document.removeEventListener('visibilitychange', saveOnHide);
       if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
-      if (longPressTimer) clearTimeout(longPressTimer);
       el?.removeEventListener('touchstart', onTouchStart);
       el?.removeEventListener('touchend', onTouchEnd);
       el?.removeEventListener('touchcancel', onTouchEnd);
       el?.removeEventListener('touchmove', onTouchMove);
       el?.removeEventListener('contextmenu', onContextMenu);
       art.video?.removeEventListener('resize', reportVideoHeight);
-      art.video.removeEventListener('webkitbeginfullscreen', onTouchEnd);
-      art.video.removeEventListener('webkitcurrentplaybacktargetiswirelesschanged', onTouchEnd);
-      clearMediaSession();
       el?.removeEventListener('mousemove', showControlsOnPointerMove);
       el?.removeEventListener('mouseleave', hideControlsOnMouseLeave);
       if (controlHideTimer) clearTimeout(controlHideTimer);
