@@ -13,7 +13,8 @@ import {
 import { loadCacheSettings } from '@/lib/video-cache';
 import { formatTime } from '@/lib/utils';
 import { prefersTouchPointer } from '@/lib/touch-pointer';
-import { getNativePlaybackUrl, supportsNativeAirPlay } from '@/lib/native-hls';
+import { getNativePlaybackUrl, supportsNativeAirPlay, usesNativeAppleControls } from '@/lib/native-hls';
+import { NativePlayerShell } from './native-player-shell';
 import {
   ART_DEFAULT_CONTROL_HIDE_MS,
   DESKTOP_CONTROL_HIDE_MS,
@@ -30,7 +31,7 @@ import {
  * 重建 <video> 元素，触发「黑屏有声」的渲染竞态。
  */
 
-interface PlayerShellProps {
+export interface PlayerShellProps {
   url: string;
   title: string;
   adFilter: boolean;
@@ -60,7 +61,17 @@ interface PlayerShellProps {
   hasNextEpisode?: boolean;
 }
 
-export function PlayerShell({
+/** Apple 手机和平板使用系统视频控件，避免网页播放器抢占投屏交接与触摸事件。 */
+export function PlayerShell(props: PlayerShellProps) {
+  const [nativeControls, setNativeControls] = useState<boolean | null>(null);
+  useEffect(() => {
+    setNativeControls(usesNativeAppleControls(document.createElement('video'), navigator));
+  }, []);
+  if (nativeControls === null) return <div className="w-full h-full bg-black" />;
+  return nativeControls ? <NativePlayerShell {...props} /> : <ArtPlayerShell {...props} />;
+}
+
+function ArtPlayerShell({
   url,
   title,
   adFilter,
