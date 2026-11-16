@@ -22,15 +22,10 @@ import { Icon } from '@/components/icon';
 import { useAuth } from '@/components/auth';
 import { resolveSource, useAppStore } from '@/lib/store';
 import { qualityKey } from '@/lib/quality';
-import {
-  clearProgress,
-  progressKeyOf,
-  saveProgress,
-  updateHistoryProgress,
-  upsertHistory,
-  db,
-} from '@/lib/db';
+import { readSharedProgress, saveSharedProgress, upsertHistory } from '@/lib/shared-history';
 import { cn } from '@/lib/utils';
+import { FavoriteButton } from '@/components/favorite-button';
+import { useLibrary, matchingFavorite } from '@/lib/library-client';
 
 /**
  * 播放页（唯一入口，替代旧版 watch.html → player.html 跳转链）。
@@ -65,11 +60,18 @@ function WatchContent() {
     detail: searchParams.get('detail') || undefined,
   });
 
+  const library = useLibrary(verified);
+  const favorite = matchingFavorite(library.data?.items, source, vodId);
+  const favoriteId = favorite?.id, favoriteEpisodeCount = favorite?.episodes.length;
+  useEffect(() => {
+    if (favoriteId && favoriteEpisodeCount) router.replace(`/library/watch?item=${favoriteId}&index=${indexParam}`, { scroll: false });
+  }, [favoriteId, favoriteEpisodeCount, indexParam, router]);
+
   // 详情查询：无 id（纯直连链接分享）时跳过
   const detailQuery = useQuery({
     queryKey: ['detail', sourceKey, vodId, source?.url],
     queryFn: ({ signal }) => api.detail(vodId, source!, signal),
-    enabled: Boolean(source && vodId && verified),
+    enabled: Boolean(source && vodId && verified && !library.isLoading && !favorite),
     staleTime: 5 * 60_000,
   });
 
@@ -106,9 +108,9 @@ function WatchContent() {
     const urlPos = parseInt(searchParams.get('position') || '0', 10) || 0;
     if (urlPos > 0) return urlPos;
     if (!vodId) return 0;
-    const entry = await db.progress.get(progressKeyOf(sourceKey, vodId, currentIndex));
+    const entry = source?.url ? await readSharedProgress(source.url, vodId, currentIndex) : null;
     return entry?.position ?? 0;
-  }, [searchParams, sourceKey, vodId, currentIndex]);
+  }, [searchParams, source?.url, vodId, currentIndex]);
 
   // 写入观看历史（进入页面即记录，进度后续增量更新）
   useEffect(() => {
@@ -135,11 +137,10 @@ function WatchContent() {
   const handleProgress = useCallback(
     (position: number, duration: number) => {
       if (vodId) {
-        saveProgress(sourceKey, vodId, currentIndex, position, duration).catch(() => {});
-        updateHistoryProgress(sourceKey, vodId || currentUrl, position, duration).catch(() => {});
+        if (source?.url) saveSharedProgress(source.url, vodId, currentIndex, position, duration).catch(() => {});
       }
     },
-    [sourceKey, vodId, currentIndex, currentUrl]
+    [source?.url, vodId, currentIndex]
   );
 
   // 自动连播的 800ms 延迟切集要在卸载时取消，避免离开页面后跳转
@@ -149,11 +150,11 @@ function WatchContent() {
   }, []);
 
   const handleEnded = useCallback(() => {
-    if (vodId) clearProgress(sourceKey, vodId, currentIndex).catch(() => {});
+    if (vodId && source?.url) saveSharedProgress(source.url, vodId, currentIndex, 0, 1, true).catch(() => {});
     if (store.autoplayNext && currentIndex < episodes.length - 1) {
       autoNextTimer.current = setTimeout(() => goEpisode(currentIndex + 1), 800);
     }
-  }, [store.autoplayNext, currentIndex, episodes.length, goEpisode, sourceKey, vodId]);
+  }, [store.autoplayNext, currentIndex, episodes.length, goEpisode, source?.url, vodId]);
 
   // Alt+←/→ 集数切换快捷键
   useEffect(() => {
@@ -181,6 +182,10 @@ function WatchContent() {
     );
   }
 
+  if (library.isLoading) return <main className="p-6">正在检查资料库…</main>;
+
+  if (favorite) return <main className="p-6"><p>正在打开收藏影片，后台将下载全集并持续追更…</p><Link className="btn-primary mt-4" href="/library">查看收藏</Link></main>;
+
   if (!source) {
     return (
       <div className="min-h-screen flex items-center justify-center px-4">
@@ -198,17 +203,18 @@ function WatchContent() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-40 bg-surface/90 backdrop-blur border-b border-line">
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
+        <div className="max-w-7xl mx-auto px-4 py-2 min-h-14 flex flex-wrap items-center gap-3">
           <BackButton />
           <HomeButton />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1 className="text-sm font-medium text-content truncate">{videoTitle}</h1>
             <p className="text-xs text-faint">
               {source.name}
               {episodes.length > 0 && ` · 第 ${currentIndex + 1}/${episodes.length} 集`}
             </p>
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="w-full sm:w-auto sm:ml-auto flex flex-wrap items-center gap-2">
+            <FavoriteButton showLibraryLink item={favorite} source={source} vodId={vodId} title={videoTitle} cover={detailQuery.data?.videoInfo?.cover} />
             <button
               className="btn-ghost btn-sm"
               onClick={() => {
@@ -223,7 +229,7 @@ function WatchContent() {
                 // 这里先提示的话，用户随后取消保存位置会出现「已加入→已取消」的矛盾
               }}
             >
-              下载本集
+              下载到设备
             </button>
             <button className="btn-ghost btn-sm" onClick={() => setSwitchOpen(true)}>
               切换资源

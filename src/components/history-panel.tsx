@@ -1,27 +1,23 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useAuth } from './auth';
+import { libraryRequest } from '@/lib/library-client';
 import Link from 'next/link';
 import { Drawer } from './drawer';
 import { ConfirmDialog } from './confirm-dialog';
 import { EmptyState, LoadingState } from './states';
 import { Icon } from './icon';
 import { SmartImage } from './smart-image';
-import {
-  db,
-  clearAllHistory,
-  removeHistory,
-  upsertHistory,
-  MAX_HISTORY,
-  type HistoryEntry,
-} from '@/lib/db';
+import { clearAllHistory, removeHistory, upsertHistory } from '@/lib/shared-history';
+import { db, type HistoryEntry } from '@/lib/db';
 import { buildWatchUrl, cn, formatRelativeTime, formatTime } from '@/lib/utils';
 import { useToast } from './toast';
 import { resolveSource, useAppStore } from '@/lib/store';
 
 /**
- * 观看历史面板（IndexedDB 实时查询）。
+ * 观看历史面板（服务器共享记录）。
  * 与旧版的区别：播放前按需重新拉取剧集详情，不再依赖历史记录里冗余存储的全集 URL。
  * 破坏性操作分级：清空全部走确认弹窗，删除单条支持撤销。
  */
@@ -30,11 +26,16 @@ import { resolveSource, useAppStore } from '@/lib/store';
 const VISIBLE_LIMIT = 50;
 
 export function HistoryPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
-  // 全量读取（上限即 DB 淘汰上限）：默认只渲染最近若干条，搜索时覆盖更早的记录
-  const history = useLiveQuery(
-    () => db.history.orderBy('timestamp').reverse().limit(MAX_HISTORY).toArray(),
-    [open]
-  );
+  const { verified } = useAuth(), client = useQueryClient();
+  const queryHistory = useQuery({ queryKey: ['shared-history'], queryFn: () => libraryRequest<{ entries: HistoryEntry[] }>('/history'), enabled: verified && open, refetchInterval: open ? 5000 : false });
+  const history = useMemo(() => queryHistory.error ? [] : queryHistory.data?.entries, [queryHistory.error, queryHistory.data]);
+  const [legacyCount, setLegacyCount] = useState(0);
+  useEffect(() => { if (open && verified) void db.history.count().then(setLegacyCount).catch(() => {}); }, [open, verified]);
+  useEffect(() => {
+    const refresh = () => { void client.invalidateQueries({ queryKey: ['shared-history'] }); };
+    window.addEventListener('libretv:history-updated', refresh);
+    return () => window.removeEventListener('libretv:history-updated', refresh);
+  }, [client]);
   const { toast } = useToast();
   const [confirmClear, setConfirmClear] = useState(false);
   const [query, setQuery] = useState('');
@@ -112,11 +113,25 @@ export function HistoryPanel({ open, onClose }: { open: boolean; onClose: () => 
           )}
           <ul className="space-y-2">
             {visible.map((item) => (
-              <HistoryItem key={`${item.sourceKey}_${item.vodId}`} item={item} />
+              <HistoryItem key={item.id} item={item} />
             ))}
           </ul>
         </>
       )}
+
+      {queryHistory.error && <p className="text-danger text-sm p-3">读取共享历史失败，请稍后重试。</p>}
+      {legacyCount > 0 && <button className="btn-ghost text-sm min-h-11" onClick={async () => {
+        let imported = 0;
+        try {
+          const store = useAppStore.getState();
+          for (const entry of await db.history.toArray()) {
+            const sourceUrl = entry.sourceUrl || resolveSource(store, entry.sourceKey)?.url;
+            if (sourceUrl) { await libraryRequest('/history?import=1', 'POST', { ...entry, sourceUrl }); imported++; }
+          }
+          await client.invalidateQueries({ queryKey: ['shared-history'] }); setLegacyCount(0);
+          toast(`已处理 ${imported} 条旧历史，服务器已有记录会保留`, 'success');
+        } catch { toast('导入未完成，可稍后重试', 'error'); }
+      }}>导入此设备的旧历史（{legacyCount} 条）</button>}
 
       {/* 重操作：清空不可撤销，先确认并说明数量 */}
       <ConfirmDialog
@@ -154,12 +169,12 @@ function HistoryItem({ item }: { item: HistoryEntry }) {
     vodId: item.vodId,
     index: item.episodeIndex,
     title: item.title,
-    sourceUrl: source?.url,
+    sourceUrl: item.sourceUrl || source?.url,
     detail: source?.detail,
   });
 
   const remove = () => {
-    void removeHistory(item.sourceKey, item.vodId).then(() => {
+    void removeHistory(item.id).then(() => {
       // 轻操作：给撤销窗口，恢复时写回原记录
       toast('已删除该记录', 'info', {
         action: {

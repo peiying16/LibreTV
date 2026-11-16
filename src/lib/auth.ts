@@ -138,3 +138,16 @@ if (typeof setInterval === 'function') {
   // 不阻止 Node 进程退出
   if (typeof timer.unref === 'function') timer.unref();
 }
+
+/** 本地资料库权限绑定到具体集和收藏代次，不能用于登录或通用代理。 */
+export function signLibraryToken(episodeId: string, generation: number, scope = 'local', expiresAt = Date.now() + PLAYBACK_TTL_MS): string {
+  return `${expiresAt}.${hmac(`library:${episodeId}:${generation}:${scope}:${expiresAt}`)}`;
+}
+export function verifyLibraryToken(token: string | null, episodeId: string, generation: number, scope = 'local'): number | null {
+  const match = /^(\d+)\.([a-f0-9]{64})$/.exec(token || '');
+  if (!isPasswordConfigured() || !match) return null;
+  const expiresAt = Number(match[1]);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return null;
+  const expected = signLibraryToken(episodeId, generation, scope, expiresAt);
+  return token!.length === expected.length && crypto.timingSafeEqual(Buffer.from(token!), Buffer.from(expected)) ? expiresAt : null;
+}

@@ -5,6 +5,7 @@ export function supportsNativeAirPlay(video: HTMLVideoElement): boolean {
 }
 
 export async function getNativePlaybackUrl(url: string, adFilter: boolean, signal: AbortSignal): Promise<string> {
+  if (isLibraryPlaybackUrl(url)) return url;
   const response = await fetch('/api/playback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -120,4 +121,17 @@ export function attachNativePlayback(
     video.removeAttribute('src');
     video.load();
   };
+}
+
+/** 这些地址已经由资料库签发，不能再作为上游 URL 交给通用代理。 */
+export function isLibraryPlaybackUrl(url: string): boolean {
+  return /^\/api\/library\/(?:media|relay)\//.test(url);
+}
+export function isLibraryDirectFile(url: string): boolean {
+  if (/^\/api\/library\/media\/[^/]+\/original\.(mp4|mov|webm|mkv)(?:\?|$)/.test(url)) return true;
+  if (url.startsWith('/api/library/relay/')) {
+    const upstream = new URL(url, 'https://libretv.local').searchParams.get('url') || '';
+    return /\.(mp4|mov|webm|mkv)(?:\?|$)/i.test(upstream);
+  }
+  return false;
 }

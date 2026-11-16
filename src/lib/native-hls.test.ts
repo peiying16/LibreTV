@@ -156,3 +156,12 @@ describe('Apple mobile native controls', () => {
     stop();
   });
 });
+
+describe('library URL handoff', () => {
+  it('does not send an already signed local or relay URL back through the upstream signer', async () => {
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    const url = '/api/library/media/episode/index.m3u8?token=test';
+    expect(await getNativePlaybackUrl(url, false, new AbortController().signal)).toBe(url);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});

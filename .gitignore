@@ -12,3 +12,6 @@ vitest-results.json
 .zcode/
 .codebuddy/
 generated-images/
+# 服务器资料库与 worker 构建产物
+.libretv/
+dist/

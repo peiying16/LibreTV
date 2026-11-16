@@ -13,7 +13,7 @@ import {
 import { loadCacheSettings } from '@/lib/video-cache';
 import { formatTime } from '@/lib/utils';
 import { prefersTouchPointer } from '@/lib/touch-pointer';
-import { getNativePlaybackUrl, supportsNativeAirPlay, usesNativeAppleControls } from '@/lib/native-hls';
+import { getNativePlaybackUrl, supportsNativeAirPlay, usesNativeAppleControls, isLibraryDirectFile } from '@/lib/native-hls';
 import { NativePlayerShell } from './native-player-shell';
 import {
   ART_DEFAULT_CONTROL_HIDE_MS,
@@ -207,7 +207,7 @@ function ArtPlayerShell({
     hlsRef.current?.destroy();
     hlsRef.current = null;
     currentMediaUrlRef.current = mediaUrl;
-    nativePlaybackRef.current = supportsNativeAirPlay(video);
+    nativePlaybackRef.current = supportsNativeAirPlay(video) || isLibraryDirectFile(mediaUrl);
 
     let restoreInFlight = false;
     const restoreAndStart = async () => {
