@@ -40,6 +40,18 @@ docker compose pull && docker compose up -d
 docker compose up -d --build
 ```
 
+### 构建并发布 pying 镜像
+
+需要 Docker Buildx；默认使用已有的 `mubuildx` 构建器，版本号读取 `package.json`。
+
+```bash
+make build                         # 构建本机平台镜像并加载到本地 Docker
+make push                          # 构建 amd64/arm64 并推送到 registry.pying.ca/libretv
+make push VERSION=2.19.6-pying.5     # 指定发布标签
+```
+
+`IMAGE`、`PLATFORMS`、`BUILDER` 均可通过 Make 参数覆盖。`make push` 自带构建步骤，无需先运行 `make build`。
+
 ### Docker Compose
 
 ```yaml

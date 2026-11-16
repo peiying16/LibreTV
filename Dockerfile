@@ -3,6 +3,8 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
+# better-sqlite3 builds its native addon for each target architecture.
+RUN apk add --no-cache python3 make g++
 RUN npm ci --no-audit --no-fund
 
 COPY . .
